@@ -32,7 +32,7 @@ bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw v
 ## Security
 
 - It listens on 127.0.0.1 only.
-- It rejects requests with a non-loopback `Origin`. It does not check the `Host` header.
+- It rejects requests whose `Host` isn't a loopback name (blocking DNS rebinding) or whose `Origin` isn't loopback.
 - **There is no authentication.** Any local process or user can list every file name, size and date on the volume, regardless of file ACLs, because the server reads the MFT as admin.
   - Don't run it on shared or multi-user machines.
   - Stop it when you're done.
@@ -51,7 +51,7 @@ bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw v
 - Hard-linked files are counted once, under their first name.
 - Alternate data streams and directory index blocks are not counted. This includes the data of CompactOS/WOF-compressed files.
 - An `$MFT` so fragmented that it needs an attribute list is not supported. The server refuses to start in that case.
-- Files whose attribute list is stored outside the base record (rare: extremely fragmented files) aren't fully tracked. Their size or name may lag until restart.
+- For a file so fragmented that its attribute list is itself non-resident, live size and name changes may lag until restart.
 - NTFS metafiles, `pagefile.sys`, `hiberfil.sys` and `System Volume Information` are included in totals.
 - The HTTP port opens only after the initial scan finishes.
 - `.mcp.json` assumes port 7801, so edit it if you use `--port`.

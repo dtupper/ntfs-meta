@@ -8,8 +8,9 @@ using static Mft;
 delegate void RecordHandler(int index, Span<byte> record);
 
 /// One parsed MFT file record. Base != 0 marks an extension record belonging to record Base.
+/// Ext lists the extension records holding this record's names or $DATA (from a resident attribute list).
 record struct MftRecord(bool InUse, bool Dir, int Base, bool HasList, string? Name, int Parent,
-                        bool HasData, long Size, long Alloc, long Modified, long Accessed);
+                        bool HasData, long Size, long Alloc, long Modified, long Accessed, long[]? Ext = null);
 
 /// Read-only access to an NTFS volume: raw $MFT scan, single-record lookup, USN journal.
 sealed class Volume
@@ -18,9 +19,9 @@ sealed class Volume
 
     public readonly string Drive;
     public readonly int RecordSize;
-    public readonly long RecordCount;
+    public long RecordCount { get; private set; }
     readonly long cluster;
-    readonly List<(long Lcn, long Len)> runs;
+    List<(long Lcn, long Len)> runs = [];
     readonly SafeFileHandle h;
     SafeFileHandle? journal; // separate handle: blocking journal reads would serialize other I/O
 
@@ -36,15 +37,20 @@ sealed class Volume
         cluster = (long)U16(boot, 0x0B) * (spc <= 0x80 ? spc : 1 << (256 - spc));
         sbyte c = (sbyte)boot[0x40];
         RecordSize = c > 0 ? (int)(c * cluster) : 1 << -c;
+        if (cluster <= 0 || RecordSize is < 1024 or > 65536 || (RecordSize & (RecordSize - 1)) != 0)
+            throw new InvalidOperationException($"{drive}: has an unsupported NTFS geometry");
+        Reload();
+    }
 
+    /// Re-reads where the $MFT lives and how big it is; it grows as files are created.
+    public void Reload()
+    {
         // Record 0 is $MFT itself; its $DATA runs tell us where every other record lives.
-        var buf = new byte[Math.Max(cluster, RecordSize)];
-        RandomAccess.Read(h, buf, I64(boot, 0x30) * cluster);
-        var rec = buf.AsSpan(0, RecordSize);
+        var rec = ReadRecord(0) ?? throw new InvalidOperationException("Unreadable $MFT record");
         if (!Mft.Fixup(rec)) throw new InvalidOperationException("Unreadable $MFT record");
-        (runs, long bytes) = Mft.MftDataRuns(rec);
-        if (runs.Sum(r => r.Len) * cluster < bytes) throw new InvalidOperationException("$MFT is too fragmented (needs an attribute list); not supported");
-        RecordCount = bytes / RecordSize;
+        var (r, bytes) = Mft.MftDataRuns(rec);
+        if (r.Sum(x => x.Len) * cluster < bytes) throw new InvalidOperationException("$MFT is too fragmented (needs an attribute list); not supported");
+        (runs, RecordCount) = (r, bytes / RecordSize);
     }
 
     SafeFileHandle Open() => File.OpenHandle($@"\\.\{Drive}:", FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -143,6 +149,7 @@ static class Mft
         if (!Fixup(r)) return false;
         int flags = U16(r, 0x16), used = Math.Min((int)U32(r, 0x18), r.Length), parent = 0, ns = -1;
         string? name = null;
+        HashSet<long>? ext = null;
         bool hasData = false, hasList = false;
         long size = 0, alloc = 0, modified = 0, accessed = 0;
 
@@ -171,6 +178,9 @@ static class Mft
                     break;
                 case AttrList:
                     hasList = true;
+                    for (int p = 0, el; p + 0x1A <= v.Length && (el = U16(v, p + 4)) >= 0x1A; p += el)
+                        if (U32(v, p) is FileName or Data && (I64(v, p + 0x10) & M48) is var frn && frn != U32(r, 0x2C))
+                            (ext ??= []).Add(frn);
                     break;
                 case FileName when v.Length >= 0x42 && 0x42 + v[0x40] * 2 <= v.Length:
                     // Prefer the long (Win32/POSIX) name over the 8.3 DOS alias (namespace 2).
@@ -194,7 +204,7 @@ static class Mft
             }
         }
         rec = new((flags & 1) != 0, (flags & 2) != 0, (int)Math.Min(I64(r, 0x20) & M48, int.MaxValue), hasList, name, parent,
-                  hasData, size, alloc, modified, accessed);
+                  hasData, size, alloc, modified, accessed, ext?.ToArray());
         return true;
     }
 
