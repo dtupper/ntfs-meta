@@ -43,6 +43,7 @@ sealed class Volume
         var rec = buf.AsSpan(0, RecordSize);
         if (!Mft.Fixup(rec)) throw new InvalidOperationException("Unreadable $MFT record");
         (runs, long bytes) = Mft.MftDataRuns(rec);
+        if (runs.Sum(r => r.Len) * cluster < bytes) throw new InvalidOperationException("$MFT is too fragmented (needs an attribute list); not supported");
         RecordCount = bytes / RecordSize;
     }
 
@@ -59,20 +60,23 @@ sealed class Volume
             if (lcn < 0) { idx += bytes / RecordSize; continue; }
             for (long pos = 0; pos < bytes && idx < RecordCount; pos += buf.Length)
             {
-                int n = RandomAccess.Read(h, buf.AsSpan(0, (int)Math.Min(buf.Length, bytes - pos)), lcn * cluster + pos);
+                int want = (int)Math.Min(buf.Length, bytes - pos);
+                int n = RandomAccess.Read(h, buf.AsSpan(0, want), lcn * cluster + pos);
+                if (n != want) throw new IOException("Short read from $MFT");
                 for (int o = 0; o + RecordSize <= n && idx < RecordCount; o += RecordSize)
                     f((int)idx++, buf.AsSpan(o, RecordSize));
             }
         }
     }
 
-    /// Current record via the file system (cache-coherent, unlike raw reads). Null if not in use.
+    /// Current record via the file system (cache-coherent, unlike raw reads). Null if not in use; throws on I/O errors.
     public byte[]? ReadRecord(long frn)
     {
         var o = new byte[12 + RecordSize];
-        if (!DeviceIoControl(h, GetRecordCode, BitConverter.GetBytes(frn), 8, o, o.Length, out _, 0)) return null;
+        if (!DeviceIoControl(h, GetRecordCode, BitConverter.GetBytes(frn), 8, o, o.Length, out _, 0))
+            return Marshal.GetLastWin32Error() is 2 or 87 ? null : throw new Win32Exception();
         // NTFS returns the nearest in-use record at or below frn, so a mismatch means frn was deleted.
-        return (I64(o, 0) & M48) == frn ? o.AsSpan(12, (int)U32(o, 8)).ToArray() : null;
+        return (I64(o, 0) & M48) == frn ? o.AsSpan(12, (int)Math.Min(U32(o, 8), (uint)RecordSize)).ToArray() : null;
     }
 
     public (long Id, long Next) QueryJournal()
@@ -146,7 +150,7 @@ static class Mft
         {
             uint type = U32(r, off);
             int len = (int)U32(r, off + 4);
-            if (type == End || len < 16 || off + len > used) break;
+            if (type == End || len < 24 || len > used - off) break;
             var a = r.Slice(off, len);
             off += len;
 
@@ -155,7 +159,7 @@ static class Mft
             if (resident)
             {
                 int vo = U16(a, 0x14), vl = (int)U32(a, 0x10);
-                if (vo + vl > len) continue;
+                if (vl < 0 || vo > len - vl) continue;
                 v = a.Slice(vo, vl);
             }
 
@@ -174,22 +178,22 @@ static class Mft
                     {
                         name = Encoding.Unicode.GetString(v.Slice(0x42, v[0x40] * 2));
                         ns = v[0x41];
-                        parent = (int)(I64(v, 0) & M48);
+                        parent = (int)Math.Min(I64(v, 0) & M48, int.MaxValue);
                     }
                     break;
                 case Data when a[9] == 0: // unnamed stream only; ADS are ignored
                     if (resident) { hasData = true; size = alloc = v.Length; }
-                    else if (I64(a, 0x10) == 0 && len >= 0x40) // first extent carries the sizes
+                    else if (len >= 0x40 && I64(a, 0x10) == 0) // first extent carries the sizes
                     {
                         hasData = true;
-                        size = I64(a, 0x30);
+                        size = Math.Max(0, I64(a, 0x30));
                         // Compressed/sparse attributes carry the true on-disk size at 0x40.
-                        alloc = (U16(a, 0x0C) & 0x8001) != 0 && len >= 0x48 ? I64(a, 0x40) : I64(a, 0x28);
+                        alloc = Math.Max(0, (U16(a, 0x0C) & 0x8001) != 0 && len >= 0x48 ? I64(a, 0x40) : I64(a, 0x28));
                     }
                     break;
             }
         }
-        rec = new((flags & 1) != 0, (flags & 2) != 0, (int)(I64(r, 0x20) & M48), hasList, name, parent,
+        rec = new((flags & 1) != 0, (flags & 2) != 0, (int)Math.Min(I64(r, 0x20) & M48, int.MaxValue), hasList, name, parent,
                   hasData, size, alloc, modified, accessed);
         return true;
     }
@@ -201,16 +205,18 @@ static class Mft
         {
             uint type = U32(r, off);
             int len = (int)U32(r, off + 4);
-            if (type == End || len < 16) break;
+            if (type == End || len < 24 || len > r.Length - off) break;
             var a = r.Slice(off, len);
             off += len;
             if (type != Data || a[8] == 0 || a[9] != 0) continue;
+            if (a.Length < 0x40) throw new InvalidOperationException("Corrupt $MFT $DATA attribute");
 
             var runs = new List<(long, long)>();
             long lcn = 0;
             for (int p = U16(a, 0x20); p < a.Length && a[p] != 0;)
             {
                 int ls = a[p] & 0xF, os = a[p] >> 4;
+                if (ls > 8 || os > 8 || p + 1 + ls + os > a.Length) throw new InvalidOperationException("Corrupt $MFT run list");
                 p++;
                 long count = Le(a.Slice(p, ls), false);
                 p += ls;
