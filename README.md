@@ -9,13 +9,6 @@ dotnet build -c Release
 bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw volume access needs admin
 ```
 
-## Requirements
-
-- Windows with an NTFS volume.
-- The .NET 8 SDK, to build.
-- An elevated terminal. Raw volume access needs admin.
-- The USN journal must be active on the volume. It is on by default for the system drive.
-
 | Tool         | Purpose                                                           |
 |--------------|-------------------------------------------------------------------|
 | `summary`    | capacity / used / free, file and dir counts                       |
@@ -30,11 +23,16 @@ bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw v
 - REST: `GET /api` lists the tools. `GET /api/list?path=C:\Users&limit=20` calls one.
 - MCP: `POST /mcp` (streamable HTTP, stateless). `.mcp.json` registers it for Claude Code in this directory.
 
+## Requirements
+
+- Windows with an NTFS volume, and the .NET 8 SDK to build.
+- An elevated terminal: raw volume access needs admin.
+- An active USN journal on the volume (the default on the system drive).
+
 ## Security
 
 - It listens on 127.0.0.1 only.
-- It rejects requests whose `Host` isn't a loopback name, which blocks DNS rebinding.
-- It rejects requests with a non-loopback `Origin`.
+- It rejects requests with a non-loopback `Origin`. It does not check the `Host` header.
 - **There is no authentication.** Any local process or user can list every file name, size and date on the volume, regardless of file ACLs, because the server reads the MFT as admin.
   - Don't run it on shared or multi-user machines.
   - Stop it when you're done.
@@ -51,10 +49,9 @@ bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw v
 ## Limits
 
 - Hard-linked files are counted once, under their first name.
-- Alternate data streams and directory index blocks are not counted.
+- Alternate data streams and directory index blocks are not counted. This includes the data of CompactOS/WOF-compressed files.
 - An `$MFT` so fragmented that it needs an attribute list is not supported. The server refuses to start in that case.
 - Files whose attribute list is stored outside the base record (rare: extremely fragmented files) aren't fully tracked. Their size or name may lag until restart.
-- Alternate data streams aren't counted. That includes the compressed data of CompactOS/WOF-compressed files.
 - NTFS metafiles, `pagefile.sys`, `hiberfil.sys` and `System Volume Information` are included in totals.
 - The HTTP port opens only after the initial scan finishes.
 - `.mcp.json` assumes port 7801, so edit it if you use `--port`.
