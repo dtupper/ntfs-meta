@@ -27,6 +27,7 @@ jobs:
           $exe = 'bin\Release\net8.0\ntfs-meta.exe'
           & $exe --port abc 2>$null
           if ($LASTEXITCODE -ne 1) { throw "bad --port should exit 1, got $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0  # the runner fails the step on a leftover non-zero exit code
 
           $p = Start-Process $exe 'C: --port 7801' -PassThru -NoNewWindow
           try {
