@@ -29,9 +29,9 @@ This software was built by Claude Opus 5.5 (with Sonnet & Haiku 5.5 sub-agents) 
 
 ## AI Disclosure
 
-As noted above, this software was built by Claude Opus 5.5 (with Sonnet & Haiku 5.5 sub-agents). I (as a human) can and have read the whole of the software and understand what it is doing, although I do not consider myself either an expert or experienced developer.
+As noted above, this software was built by Claude Opus 5.5 (with Sonnet & Haiku 5.5 sub-agents). I (as a human) can and have read the whole of the software and I _generally_ understand what it is doing... but not completely.
 
-Thus, per [Benn Jordan's blog on Vibe Coding Ethics](https://www.bennjordan.com/blog/we-should-standardize-vibe-coding-ethics), I would categorize this software as `AI-dev-C` or `AI-dev-B`. I would neither consider myself a "novice" developer nor an "experienced" one, so, uh, yeah.
+Thus, per [Benn Jordan's blog on Vibe Coding Ethics](https://www.bennjordan.com/blog/we-should-standardize-vibe-coding-ethics), I would categorize this software as `AI-dev-C`.
 
 ## Requirements
 
