@@ -46,6 +46,8 @@ bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw v
 - `Index.cs` holds the in-memory tree, the lazily rolled-up directory totals, and the queries.
 - `Program.cs` defines the tool table plus the REST and MCP endpoints.
 
+MIT licensed; see `LICENSE`.
+
 ## Limits
 
 - Hard-linked files are counted once, under their first name.
