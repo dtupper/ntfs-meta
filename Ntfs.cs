@@ -159,7 +159,7 @@ static class Mft
             if (resident)
             {
                 int vo = U16(a, 0x14), vl = (int)U32(a, 0x10);
-                if (vl < 0 || vo + vl > len) continue;
+                if (vl < 0 || vo > len - vl) continue;
                 v = a.Slice(vo, vl);
             }
 
@@ -209,6 +209,7 @@ static class Mft
             var a = r.Slice(off, len);
             off += len;
             if (type != Data || a[8] == 0 || a[9] != 0) continue;
+            if (a.Length < 0x40) throw new InvalidOperationException("Corrupt $MFT $DATA attribute");
 
             var runs = new List<(long, long)>();
             long lcn = 0;
