@@ -43,7 +43,7 @@ Thus, per [Benn Jordan's blog on Vibe Coding Ethics](https://www.bennjordan.com/
 
 This server is for local agents and applications on a machine you control. It has no authentication by design: anything that can reach it gets a complete, ACL-free listing of the volume. Exposing it beyond loopback (port forwarding, a reverse proxy, a container or VM bridge, a tunnel) hands that listing to whoever is on the other end.
 
-So, yes! If you open this to the network or don't trust everything on your PC, then you can get yourself into (relatively risk free) trouble. In other words: this is a _deliberate_ footgun. Don't use it unless you trust every application on your computer with the ability to read the full file tree and metadata of the disk.
+So, yes! If you open this to the network or don't trust everything on your PC, then you can get yourself into (relatively low-stakes) trouble. In other words: this is a _deliberate_ footgun. Don't use it unless you trust every application on your computer with the ability to read the full file tree and metadata of the disk.
 
 - It listens on 127.0.0.1 only.
 - It rejects requests whose `Host` isn't a loopback name (blocking DNS rebinding) or whose `Origin` isn't loopback.
