@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build
+        run: dotnet build -c Release -warnaserror
+
+      # Hosted runners are elevated, so the server can index the runner's real C: drive.
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = 'bin\Release\net8.0\ntfs-meta.exe'
+          & $exe --port abc 2>$null
+          if ($LASTEXITCODE -ne 1) { throw "bad --port should exit 1, got $LASTEXITCODE" }
+
+          $p = Start-Process $exe 'C: --port 7801' -PassThru -NoNewWindow
+          try {
+            $s = $null
+            for ($i = 0; $i -lt 120 -and -not $s; $i++) {
+              if ($p.HasExited) { throw "server exited with $($p.ExitCode)" }
+              try { $s = Invoke-RestMethod http://127.0.0.1:7801/api/summary } catch { Start-Sleep 1 }
+            }
+            if (-not $s) { throw 'server did not come up' }
+            $s | ConvertTo-Json
+            if ($s.files -le 0) { throw 'no files indexed' }
+
+            $code = (Invoke-WebRequest http://127.0.0.1:7801/api/summary -Headers @{ Host = 'evil.example' } -SkipHttpErrorCheck).StatusCode
+            if ($code -ne 403) { throw "foreign Host should get 403, got $code" }
+
+            $r = Invoke-RestMethod http://127.0.0.1:7801/mcp -Method Post -ContentType application/json -Body '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+            if ($r.result.tools.Count -lt 6) { throw 'tools/list incomplete' }
+          }
+          finally { Stop-Process $p -ErrorAction SilentlyContinue }

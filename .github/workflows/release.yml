@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $v = $env:TAG.Substring(1)
+          foreach ($rid in 'win-x64', 'win-arm64') {
+            dotnet publish -c Release -r $rid --self-contained -warnaserror -o "out\$rid" `
+              -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:Version=$v
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            Compress-Archive "out\$rid\ntfs-meta.exe", README.md, LICENSE "ntfs-meta-$v-$rid.zip"
+          }
+          Get-FileHash *.zip -Algorithm SHA256 |
+            % { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content SHA256SUMS.txt
+
+      - name: Create release
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $pre = if ($env:TAG.Contains('-')) { '--prerelease' } else { @() }
+          gh release create $env:TAG (Get-ChildItem *.zip).Name SHA256SUMS.txt --verify-tag --generate-notes $pre
