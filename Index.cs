@@ -13,23 +13,27 @@ struct Node
 sealed class Index(Volume vol)
 {
     const int Root = 5;
+    const long RebuildInterval = 2000; // ms; under constant churn, totals lag by at most this much
 
+    readonly object gate = new();
     Node[] nodes = [];
     List<int>?[] kids = [];
     long[] total = [], newest = [];
     int[] files = [];
     bool dirty;
-    long journalId, usn, changes;
+    long journalId, usn, changes, built;
     DateTime lastChange;
+    string? error;
 
     public int Count => nodes.Length;
 
     public void Load()
     {
+        vol.Reload(); // the MFT may have grown since the last scan
         var (id, next) = vol.QueryJournal(); // before the scan, so nothing that changes during it is missed
         var n = new Node[vol.RecordCount];
         vol.Scan((i, raw) => { if (Mft.Parse(raw, out var r)) Apply(n, i, r); });
-        lock (this) { nodes = n; journalId = id; usn = next; dirty = true; }
+        lock (gate) { nodes = n; journalId = id; usn = next; dirty = true; built = 0; error = null; }
     }
 
     /// Follows the USN journal forever; falls back to a full rescan if the journal is lost.
@@ -40,28 +44,42 @@ sealed class Index(Volume vol)
             try
             {
                 var changed = vol.ReadJournal(journalId, ref usn);
-                lock (this)
+                var recs = changed.Where(f => f < int.MaxValue).SelectMany(f => Fetch((int)f)).ToList(); // I/O outside the lock
+                lock (gate)
                 {
-                    foreach (var frn in changed) Refresh((int)frn);
+                    dirty = true;
+                    foreach (var (i, r) in recs) Refresh(i, r);
                     changes += changed.Count;
                     lastChange = DateTime.Now;
-                    dirty = true;
                 }
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"journal: {e.Message}; rescanning");
+                lock (gate) error = e.Message;
                 Thread.Sleep(5000);
                 try { Load(); } catch (Exception e2) { Console.Error.WriteLine($"rescan failed: {e2.Message}"); }
             }
         }
     }
 
-    void Refresh(int i)
+    /// A record plus any extension records its attribute list points to (journal entries name only the base).
+    List<(int, MftRecord?)> Fetch(int i)
+    {
+        var raw = vol.ReadRecord(i);
+        MftRecord? r = raw != null && Mft.Parse(raw, out var p) ? p : null;
+        var all = new List<(int, MftRecord?)> { (i, r) };
+        foreach (long e in r?.Ext ?? [])
+            if (e < int.MaxValue && vol.ReadRecord(e) is { } x && Mft.Parse(x, out var q)) all.Add(((int)e, q));
+        return all;
+    }
+
+    void Refresh(int i, MftRecord? r)
     {
         if (i >= nodes.Length) Array.Resize(ref nodes, i + i / 4 + 1024);
-        if (vol.ReadRecord(i) is { } raw && Mft.Parse(raw, out var r)) Apply(nodes, i, r);
-        else nodes[i].Live = false;
+        if (r is not { } x) { nodes[i].Live = false; return; }
+        if (x.Base == 0 && x.Name == null && x.Ext != null) nodes[i].Name = null; // name lives in an extension, re-applied next
+        Apply(nodes, i, x);
     }
 
     static void Apply(Node[] nodes, int i, in MftRecord r)
@@ -102,14 +120,14 @@ sealed class Index(Volume vol)
                 if (j >= n || !nodes[j].Live) break;
             }
         }
-        dirty = false;
+        (dirty, built) = (false, Environment.TickCount64);
     }
 
     T Read<T>(Func<T> query)
     {
-        lock (this)
+        lock (gate)
         {
-            if (dirty) Rebuild();
+            if (dirty && Environment.TickCount64 - built >= RebuildInterval) Rebuild();
             return query();
         }
     }
@@ -133,6 +151,7 @@ sealed class Index(Volume vol)
             mft_records = nodes.Length,
             journal_changes = changes,
             last_change = changes > 0 ? lastChange.ToString("s") : null,
+            error, // set while the journal is lost and rescans are failing: results are stale
         };
     });
 
@@ -191,7 +210,7 @@ sealed class Index(Volume vol)
 
     public object Find(string pattern, string path, int limit) => Read(() =>
         Under(Resolve(path))
-            .Where(i => FileSystemName.MatchesSimpleExpression(pattern, nodes[i].Name, ignoreCase: true))
+            .Where(i => nodes[i].Live && FileSystemName.MatchesSimpleExpression(pattern, nodes[i].Name, ignoreCase: true))
             .OrderByDescending(i => nodes[i].Dir ? total[i] : nodes[i].Alloc).Take(limit)
             .Select(i => Entry(i, true))
             .ToList());
@@ -246,7 +265,8 @@ sealed class Index(Volume vol)
         }
     }
 
-    IEnumerable<int> FilesUnder(int root) => Under(root).Where(i => !nodes[i].Dir);
+    // Between rebuilds, kids may still list records the journal has since freed.
+    IEnumerable<int> FilesUnder(int root) => Under(root).Where(i => !nodes[i].Dir && nodes[i].Live && nodes[i].Name != null);
 
     static string Ext(string name)
     {
@@ -254,7 +274,10 @@ sealed class Index(Volume vol)
         return dot > 0 && dot < name.Length - 1 ? name[(dot + 1)..].ToLowerInvariant() : "(none)";
     }
 
-    static string? Date(long fileTime) => fileTime > 0 ? DateTime.FromFileTimeUtc(fileTime).ToString("yyyy-MM-dd") : null;
+    static string? Date(long fileTime) =>
+        fileTime is > 0 and <= MaxFileTime ? DateTime.FromFileTimeUtc(fileTime).ToString("yyyy-MM-dd") : null;
+
+    const long MaxFileTime = 2650467743999999999; // 9999-12-31, the DateTime limit
 
     static string Human(long bytes)
     {
