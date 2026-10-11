@@ -31,9 +31,11 @@ bin\Release\net8.0\ntfs-meta.exe C: [--port 7801]     # elevated terminal: raw v
 
 ## Security
 
+This server is for local agents and applications on a machine you control. It has no authentication by design: anything that can reach it gets a complete, ACL-free listing of the volume. Exposing it beyond loopback (port forwarding, a reverse proxy, a container or VM bridge, a tunnel) hands that listing to whoever is on the other end. Don't.
+
 - It listens on 127.0.0.1 only.
 - It rejects requests whose `Host` isn't a loopback name (blocking DNS rebinding) or whose `Origin` isn't loopback.
-- **There is no authentication.** Any local process or user can list every file name, size and date on the volume, regardless of file ACLs, because the server reads the MFT as admin.
+- Any local process or user can list every file name, size and date on the volume, regardless of file ACLs, because the server reads the MFT as admin.
   - Don't run it on shared or multi-user machines.
   - Stop it when you're done.
 - Web pages served from localhost on any port can also call it.
